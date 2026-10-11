@@ -1,4 +1,4 @@
-# Mole 1.2.1
+# Mole 1.3.1
 
 **A little mining robot that digs tunnels, finds nearby ores, and brings them back to your chest.**
 
@@ -64,7 +64,7 @@ At every tunnel step it checks the blocks above, below, in front, behind, left, 
 
 **Mole uses tunnel mining.** Stone stays in the walls, ceiling, and floor. Some isolated ores hidden between tunnels can be missed because the turtle cannot see through stone. Connected veins it finds are followed inside the chosen area. A search has size and depth limits so huge modded deposits cannot make the turtle wander forever; some of a very large deposit may remain.
 
-The turtle returns to the chest when its inventory is nearly full, it needs fuel, or a tunnel level is finished. It also comes home when it finishes the whole job.
+The turtle returns to the chest when its inventory is nearly full, it needs fuel, or a tunnel level is finished. It also comes home when it finishes the whole job. It chooses the shortest route through cells it has already visited, and uses known tunnels to get back to work. If a passage becomes blocked, it tries another known route. If none is clear, it tries to mine the obstruction, then digs a detour toward the starting position. It reconnects to known tunnels as soon as it can. Emergency detours can extend one block past the far edges of the chosen width and length, and can reach the surface. Keep that border clear of builds. Protected blocks and machines are still left alone. If every approach is blocked, fuel is insufficient, or inventory space runs out, it saves progress and reports the problem after attempting to return.
 
 ## Everyday controls
 
@@ -138,11 +138,17 @@ An unfinished old excavation job switches to tunnel mining at the chest, restart
 
 The turtle saves progress after moves and turns. If a move was interrupted, it tries the possible saved positions and finds its original chest without GPS. It keeps extra fuel for this trip and does not dig while uncertain. Once home, it replays the saved route to continue the vein or tunnel step.
 
-Recovery needs a clear return route, its original chest, and enough fuel. Matching chest type and size is not a unique identity, which is why the starting chest should be the only matching inventory near the recovery area. Repeated interruptions, changed terrain, or a missing chest can still need help.
+Recovery needs a clear return route, its original chest, and enough fuel. If a movement is interrupted during emergency excavation, Mole must confirm its position before digging again; a blocked recovery route can still need clearing. Matching chest type and size is not a unique identity, which is why the starting chest should be the only matching inventory near the recovery area. Repeated interruptions, changed terrain, or a missing chest can still need help.
 
 More advanced settings live in `quarry-data/config`: allowed fuel items, protected blocks, fuel reserves, retries, and vein search limits. Job dimensions are fixed once a job starts.
 
 The program does not seal liquids or collect lava in buckets. It avoids known protected blocks and detected machine peripherals, but not every modded machine is detectable; keep it away from builds you want to preserve.
+
+## Faster mining in 1.3.1
+
+Mole takes the shortest turn to face a block and starts new scans from its current facing. All six neighboring directions are still checked where they fall inside the mining area. Saved scans and automatic chest recovery support both left and right turns.
+
+Mole skips searching inventory for fuel when it already has enough, and stops counting empty slots once it finds two. It still checks its fuel reserve and available space. Return trips and trips back to work use the shortest available route through recorded tunnels. Every move still checks for obstacles. If it cannot reach its work position, Mole returns home and pauses instead of waiting underground. These routes help avoid new obstacles on return trips; digging a new tunnel can still encounter bedrock or other unbreakable blocks.
 
 ## Testing
 

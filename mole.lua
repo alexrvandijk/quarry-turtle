@@ -1,4 +1,4 @@
--- Mole v1.2.1: guided setup, selective tunnels, local coordinates, durable checkpoints, bounded vein mining.
+-- Mole v1.3.1: guided setup, selective tunnels, local coordinates, durable checkpoints, bounded vein mining.
 -- Origin is the turtle's starting block. +Z is forward, +X is right, Y is down.
 local argv = {...}
 local ROOT = 'quarry-data'
@@ -107,7 +107,7 @@ local function settingsMenu()
   end
 end
 if argv[1]=='help' then
-  print('Mole 1.2.1 - tunnel miner')
+  print('Mole 1.3.0 - tunnel miner')
   print('mole            Start or resume')
   print('mole status   Show progress')
   print('mole settings Change the trash list')
@@ -125,7 +125,7 @@ if fresh then
   if s and (s.pending or s.recovery or #s.route>0 or (s.phase~='done' and s.phase~='paused')) then
     print('Finish the job or return home before starting a new one.'); return
   end
-  print('\nMole 1.2.1 - first-time setup')
+  print('\nMole 1.3.0 - first-time setup')
   print('We dig tunnels and collect nearby ores.')
   print('Press Enter for each default, or q to cancel.')
   print('Length goes forward; width goes to the right.')
@@ -181,13 +181,53 @@ if argv[1]=='recover' then
   s.pending=nil; save(); log('Pose confirmed; run mole to continue.'); return
 end
 local dx={0,1,0,-1}; local dz={1,0,-1,0}
+-- Only cells reached by a successful move become route-planning nodes.
+-- Nearby visited cells may be connected, but every move still rechecks them.
+s.tunnels=s.tunnels or {}; s.blocked={}
+local origin={x=0,y=0,z=0}
+local function recordCell(p) s.tunnels[key(p)]=true; s.blocked[key(p)]=nil end
+recordCell(origin)
+for _,p in ipairs(s.route) do recordCell(p) end
+local function adjacent(p)
+  return {{x=p.x+1,y=p.y,z=p.z},{x=p.x-1,y=p.y,z=p.z},
+    {x=p.x,y=p.y+1,z=p.z},{x=p.x,y=p.y-1,z=p.z},
+    {x=p.x,y=p.y,z=p.z+1},{x=p.x,y=p.y,z=p.z-1}}
+end
+local function knownPath(start,goal)
+  local sk,gk=key(start),key(goal)
+  if not s.tunnels[sk] or not s.tunnels[gk] or s.blocked[gk] then return nil end
+  if sk==gk then return {} end
+  local queue={copy(start)}; local at=1; local previous={[sk]=false}; local positions={[sk]=copy(start)}
+  while at<=#queue do
+    local p=queue[at]; at=at+1
+    for _,q in ipairs(adjacent(p)) do
+      local k=key(q)
+      if s.tunnels[k] and not s.blocked[k] and previous[k]==nil then
+        previous[k]=key(p); positions[k]=q; queue[#queue+1]=q
+        if k==gk then
+          local reverse={}; local current=k
+          while current~=sk do reverse[#reverse+1]=positions[current]; current=previous[current] end
+          local path={}; for i=#reverse,1,-1 do path[#path+1]=copy(reverse[i]) end
+          return path
+        end
+      end
+    end
+  end
+end
+local function copyPath(path)
+  local result={}; for i,p in ipairs(path) do result[i]=copy(p) end; return result
+end
+local function obstruction(why)
+  why=tostring(why)
+  return why:find('Known tunnel blocked:',1,true)==1 or why:find('Movement blocked at ',1,true)==1
+end
 local function inside(p) return p.x>=0 and p.x<c.width and p.z>=0 and p.z<c.length and p.y>=1 and p.y<=c.depth end
 -- Persist intent before physical actions; unfinished actions trigger chest homing.
 local function action(fn, after, route)
   s.pending={before=copy(s.p),after=copy(after),route=route,fuel=turtle.getFuelLevel()}; save()
   local ok,why=fn()
   if ok then
-    s.p=copy(after)
+    s.p=copy(after); recordCell(s.p)
     if route=='push' then s.route[#s.route+1]=copy(s.p)
     elseif route=='pop' then table.remove(s.route)
     elseif route=='out' then
@@ -199,13 +239,17 @@ local function action(fn, after, route)
 end
 local function face(d)
   while s.p.d~=d do
-    local p=copy(s.p); p.d=(p.d+1)%4
-    assert(action(turtle.turnRight,p),'Turn failed')
+    local p=copy(s.p)
+    local left=(d-p.d)%4==3
+    p.d=(p.d+(left and -1 or 1))%4
+    assert(action(left and turtle.turnLeft or turtle.turnRight,p),'Turn failed')
   end
 end
 local function refuelTo(n)
   n=math.min(n,capacity())
+  if fuel()>=n then turtle.select(1); return end -- Keep the fuel check; skip needless item queries.
   for i=1,16 do
+    if fuel()>=n then break end
     local item=turtle.getItemDetail(i)
     if item and c.fuel[item.name] then
       turtle.select(i)
@@ -219,7 +263,11 @@ end
 -- Enough for a failed hypothesis, retracing it, and the correct return.
 local function reserve(n) return 3*(n+2)+c.fuelMargin end
 local function freeSlots()
-  local n=0; for i=1,16 do if turtle.getItemCount(i)==0 then n=n+1 end end; return n
+  local n=0
+  for i=1,16 do
+    if turtle.getItemCount(i)==0 then n=n+1; if n==2 then return n end end
+  end
+  return n -- Callers only need to know whether at least two slots are empty.
 end
 local function trash()
   if not c.discardTrash or s.p.y<1 then return end
@@ -247,7 +295,7 @@ local function guardedDig(side)
   local ok,why=dig(); if not ok then error('Cannot dig '..b.name..': '..tostring(why),0) end
   return true
 end
-local function step(target, mode)
+local function step(target, mode, clearedOnly)
   local side='front'; local move=turtle.forward
   if target.y<s.p.y then side='up'; move=turtle.up
   elseif target.y>s.p.y then side='down'; move=turtle.down
@@ -258,9 +306,20 @@ local function step(target, mode)
   if (mode=='push' or mode=='out') and fuel()<=reserve(#s.route+1) then
     error('Fuel reserve reached',0)
   end
+  if mode=='pop' and fuel()<#s.route+c.fuelMargin then
+    error('Insufficient fuel for the remaining known return route; stopped safely.',0)
+  end
   if fuel()<1 then error('Out of fuel; stopped at '..key(s.p),0) end
   for _=1,c.retries do
-    guardedDig(side)
+    if clearedOnly then
+      local inspect=side=='up' and turtle.inspectUp or side=='down' and turtle.inspectDown or turtle.inspect
+      local exists,b=inspect()
+      if exists and b.name~='minecraft:water' and b.name~='minecraft:lava' then
+        error('Known tunnel blocked: '..key(target)..' ('..b.name..')',0)
+      end
+      local per=side=='up' and 'top' or side=='down' and 'bottom' or 'front'
+      if peripheral.isPresent(per) then error('Known tunnel blocked: '..key(target)..' (peripheral)',0) end
+    else guardedDig(side) end
     local p=copy(target); p.d=s.p.d
     local ok=action(move,p,mode)
     if ok then return end
@@ -268,12 +327,100 @@ local function step(target, mode)
   end
   error('Movement blocked at '..key(target),0)
 end
+local function knownStep(target,mode)
+  local ok,why=pcall(step,target,mode,true)
+  if ok then return true end
+  if s.pending or not obstruction(why) then error(why,0) end
+  s.blocked[key(target)]=true; save()
+  log(tostring(why)..'; looking for another visited route.')
+  return false,why
+end
+-- Optimistic A* plans emergency excavation; each cell is inspected before digging.
+-- A one-cell positive-edge margin lets even a single-column shaft be bypassed.
+local function escapePath()
+  local start=key(s.p)
+  local open={copy(s.p)}; local cost={[start]=0}; local previous={}; local positions={[start]=copy(s.p)}
+  local closed={}
+  local function distance(p) return math.abs(p.x)+math.abs(p.y)+math.abs(p.z) end
+  while #open>0 do
+    local best=1
+    for i=2,#open do
+      if cost[key(open[i])]+distance(open[i])<cost[key(open[best])]+distance(open[best]) then best=i end
+    end
+    local p=table.remove(open,best); local pk=key(p)
+    if not closed[pk] then
+      closed[pk]=true
+      if same(p,origin) then
+        local reverse={}; local k=pk
+        while k~=start do reverse[#reverse+1]=positions[k]; k=previous[k] end
+        local path={}; for i=#reverse,1,-1 do path[#path+1]=copy(reverse[i]) end
+        return path
+      end
+      for _,q in ipairs(adjacent(p)) do
+        local k=key(q)
+        if q.x>=0 and q.x<=c.width and q.z>=0 and q.z<=c.length and q.y>=0 and q.y<=c.depth
+          and not s.blocked[k] and not closed[k] then
+          local n=cost[pk]+1
+          if n+distance(q)<=fuel()-c.fuelMargin and (not cost[k] or n<cost[k]) then
+            cost[k]=n; previous[k]=pk; positions[k]=q; open[#open+1]=q
+          end
+        end
+      end
+    end
+  end
+end
+local function excavateHome()
+  local path=escapePath()
+  if not path or #path==0 then error('Unable to find a return detour within the area and remaining fuel.',0) end
+  local q=path[1]
+  trash()
+  local ok,why=pcall(step,q,'push',false)
+  if not ok then
+    local message=tostring(why)
+    if s.pending or not (obstruction(why) or message:find('Protected block:',1,true)==1
+      or message:find('Cannot dig ',1,true)==1) then error(why,0) end
+    s.blocked[key(q)]=true; save()
+    log('Return detour blocked; trying another approach.')
+  end
+  -- Never journal an optimistic path as visited. Successful moves alone extend
+  -- the physical trail, so interruptions still have a truthful recovery route.
+  local connected=knownPath(origin,s.p)
+  if connected then s.route=connected; s.service.excavating=nil; save() end
+end
 local function homeStep()
   local n=#s.route
-  if n>0 then step(n==1 and {x=0,y=0,z=0} or s.route[n-1],'pop') end
+  if n==0 then return end
+  if s.service.excavating then excavateHome(); return end
+  local target=n==1 and origin or s.route[n-1]
+  local ok,why=knownStep(target,'pop')
+  if not ok then
+    local alternate=knownPath(origin,s.p)
+    if not alternate then
+      -- Try reopening the original passage before excavating around it.
+      trash()
+      local reopened,err=pcall(step,target,'pop',false)
+      if reopened then return end
+      local message=tostring(err)
+      if s.pending or not (obstruction(err) or message:find('Protected block:',1,true)==1
+        or message:find('Cannot dig ',1,true)==1) then error(err,0) end
+      s.service.excavating=true; save()
+      log('No clear recorded route; excavating a detour toward home.')
+      excavateHome(); return
+    end
+    s.route=alternate; save()
+    log('Alternative return route: '..#s.route..' steps.')
+  end
 end
 local function gotoWork(p)
-  -- Work navigation follows previously excavated rows or digs within the footprint.
+  if s.tunnels[key(p)] then
+    while not same(s.p,p) do
+      local path=knownPath(s.p,p)
+      if not path then error('No clear known route to the saved work position.',0) end
+      for _,q in ipairs(path) do if not knownStep(q,'push') then break end end
+    end
+    return
+  end
+  -- New shaft and tunnel cells are excavated only inside the work footprint.
   while s.p.y~=p.y do
     step({x=s.p.x,y=s.p.y+(p.y>s.p.y and 1 or -1),z=s.p.z},'push')
   end
@@ -315,15 +462,17 @@ local function chestFuel(target)
   if fuel()<target then error('Need more coal/charcoal. Put it at the front of the chest inventory, then run mole.',0) end
 end
 local function requestService(reason, pause)
-  log('Returning to surface: '..reason..' (route '..#s.route..', depth '..s.p.y..')')
-  s.service={path={},at=0,pause=pause,reason=reason}
-  for i,p in ipairs(s.route) do s.service.path[i]=copy(p) end
+  local trail=#s.route
+  local shortest=knownPath(origin,s.p)
+  if shortest then s.route=shortest end
+  log('Returning to surface: '..reason..' ('..#s.route..' steps; trail was '..trail..'; depth '..s.p.y..')')
+  s.service={path=copyPath(s.route),target=copy(s.p),at=0,pause=pause,reason=reason}
   s.phase='home'; save()
 end
 local function service()
   if s.phase=='home' then
     while #s.route>0 do homeStep() end
-    if s.service.reset then s.service.path={} end
+    if s.service.reset then s.service.path={}; s.service.target=copy(origin) end
     s.phase='dock'; save()
   end
   if s.phase=='dock' then
@@ -334,6 +483,10 @@ local function service()
     if s.service.pause then
       s.phase='paused'; save(); log('Paused: '..s.service.reason..'. Fix it, then run mole.'); return false
     end
+    local target=s.service.target or s.service.path[#s.service.path] or origin
+    local shortest=knownPath(origin,target)
+    if shortest then s.service.path=shortest end
+    s.service.target=copy(target); s.service.at=0; save()
     local n=#s.service.path
     local needed=n+reserve(n)+64
     assert(needed<=capacity() or fuel()==math.huge,'Route exceeds fuel capacity; reduce depth/vein limits.')
@@ -343,7 +496,17 @@ local function service()
   if s.phase=='out' then
     while s.service.at<#s.service.path do
       local p=s.service.path[s.service.at+1]
-      step(p,'out')
+      if not knownStep(p,'out') then
+        local target=s.service.target or s.service.path[#s.service.path]
+        local tail=knownPath(s.p,target)
+        if not tail then
+          s.phase='home'; s.service.pause=true; s.service.reason='Work route blocked; returned home for safety'; save()
+          return service()
+        end
+        s.service.path=copyPath(s.route); s.service.at=#s.route
+        for _,q in ipairs(tail) do s.service.path[#s.service.path+1]=copy(q) end
+        save()
+      end
       -- Route is the completed outbound prefix, reconstructed after each checkpoint.
       s.route={}; for i=1,s.service.at do s.route[i]=copy(s.service.path[i]) end; save()
     end
@@ -389,7 +552,7 @@ local function upgradeAtDock()
   assert(#s.route==0 and s.p.x==0 and s.p.y==0 and s.p.z==0,'Update requires the starting chest.')
   s.index=bandStarts[s.upgradeBand+1] or total+1
   s.upgradeBand=nil; s.layoutVersion=2; s.vein=nil
-  if s.service then s.service.path={}; s.service.at=0 end
+  if s.service then s.service.path={}; s.service.target=copy(origin); s.service.at=0 end
   save(); log('Updated to tunnel mining. Existing depth progress kept.')
 end
 local function neighbour(p,d)
@@ -398,8 +561,15 @@ local function neighbour(p,d)
   else q.x=q.x+dx[d+1]; q.z=q.z+dz[d+1] end
   return q
 end
+-- Keep the scan order in each saved frame so a restart resumes the same
+-- neighbor. Legacy frames retain their original absolute direction order.
+local function scanDirection(frame) return frame.order and frame.order[frame.next+1] or frame.next end
+local function scanFrame(p)
+  local d=p.d
+  return {p=copy(p),next=0,order={4,5,d,(d+1)%4,(d+2)%4,(d+3)%4}}
+end
 local function vein()
-  if not s.vein then s.vein={stack={{p=copy(s.p),next=0}},count=0}; save() end
+  if not s.vein then s.vein={stack={scanFrame(s.p)},count=0}; save() end
   while #s.vein.stack>0 do
     local v=s.vein; local f=v.stack[#v.stack]
     local parent=v.stack[#v.stack-1]
@@ -410,7 +580,7 @@ local function vein()
       if parent and not same(s.p,parent.p) then step(parent.p,'pop') end
       table.remove(v.stack); save()
     else
-      local d=f.next; local q=neighbour(f.p,d)
+      local d=scanDirection(f); local q=neighbour(f.p,d)
       if inside(q) and not s.seen[key(q)] then
         local inspect
         if d==4 then inspect=turtle.inspectUp elseif d==5 then inspect=turtle.inspectDown
@@ -418,7 +588,7 @@ local function vein()
         local ok,b=inspect()
         if ok and b.name~='minecraft:water' and b.name~='minecraft:lava' and not c.trash[b.name] then
           step(q,'push'); s.seen[key(q)]=true; v.count=v.count+1
-          f.next=f.next+1; v.stack[#v.stack+1]={p=copy(q),next=0}; save()
+          f.next=f.next+1; v.stack[#v.stack+1]=scanFrame(s.p); save()
         else f.next=f.next+1; save() end
       else f.next=f.next+1; save() end
     end
@@ -436,7 +606,7 @@ local function clone(v)
   local t={}; for k,x in pairs(v) do t[k]=clone(x) end; return t
 end
 local function applyRecovery(h,op)
-  if op=='right' then h.p.d=(h.p.d+1)%4; return end
+  if op=='right' or op=='left' then h.p.d=(h.p.d+(op=='left' and -1 or 1))%4; return end
   local q=copy(h.p)
   if op=='up' then q.y=q.y-1 elseif op=='down' then q.y=q.y+1
   else q.x=q.x+dx[q.d+1]; q.z=q.z+dz[q.d+1] end
@@ -477,16 +647,17 @@ local function beginRecovery()
   -- Fuel is a useful ordering hint for movement, not a required dependency.
   if type(pending.fuel)=='number' and fuel()==pending.fuel-1 then hypotheses={after,before} end
   local resumePath=clone(s.service and s.service.path or s.route)
+  if s.service and s.service.reset then resumePath={} end
   local resumeVein=clone(s.vein)
   -- Digging precedes the move. Even if the move never happened, its target
   -- is cleared; preserve the DFS branch so ores beyond that block are found.
   if s.phase=='work' and resumeVein and pending.route=='push' then
     local frame=resumeVein.stack[#resumeVein.stack]
     if frame and frame.next<6 and same(pending.before,frame.p)
-      and same(pending.after,neighbour(frame.p,frame.next)) then
+      and same(pending.after,neighbour(frame.p,scanDirection(frame))) then
       resumePath=clone(after.route)
       frame.next=frame.next+1; resumeVein.count=resumeVein.count+1
-      resumeVein.stack[#resumeVein.stack+1]={p=copy(pending.after),next=0}
+      resumeVein.stack[#resumeVein.stack+1]=scanFrame(pending.after)
       s.seen[key(pending.after)]=true
     end
   end
@@ -500,7 +671,7 @@ local function settleRecoveryAction()
   local r=s.recovery; local pending=r.pending
   if not pending then return end
   local current=turtle.getFuelLevel()
-  if pending.op~='right' and type(pending.fuel)=='number' and type(current)=='number' then
+  if pending.op~='right' and pending.op~='left' and type(pending.fuel)=='number' and type(current)=='number' then
     -- Recovery never refuels between recording intent and settling its result.
     if current==pending.fuel-1 then
       eachHypothesis(function(h) applyRecovery(h,pending.op) end)
@@ -521,14 +692,17 @@ end
 local function recoveryAction(op)
   local r=s.recovery
   r.pending={op=op,fuel=turtle.getFuelLevel()}; save()
-  local fn=op=='right' and turtle.turnRight or op=='up' and turtle.up
+  local fn=op=='right' and turtle.turnRight or op=='left' and turtle.turnLeft or op=='up' and turtle.up
     or op=='down' and turtle.down or turtle.forward
   local ok=fn()
   if ok then eachHypothesis(function(h) applyRecovery(h,op) end) end
   r.pending=nil; save(); return ok
 end
 local function recoveryFace(h,d)
-  while h.p.d~=d do assert(recoveryAction('right'),'Recovery turn failed') end
+  while h.p.d~=d do
+    local op=(d-h.p.d)%4==3 and 'left' or 'right'
+    assert(recoveryAction(op),'Recovery turn failed')
+  end
 end
 local function anchorMatches()
   if not peripheral.hasType('front','inventory') then return false end
@@ -614,7 +788,7 @@ local ok,err=pcall(function()
     if s.phase=='work' or s.phase=='out' then
       local destination=s.phase=='out' and clone(s.service.path) or nil
       requestService('User requested return',true)
-      if destination then s.service.path=destination; save() end
+      if destination then s.service.path=destination; s.service.target=copy(destination[#destination] or origin); save() end
     elseif s.service then
       s.service.pause=true; s.service.reason='User requested return'; save()
     end
