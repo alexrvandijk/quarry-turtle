@@ -1,6 +1,6 @@
--- Mole v1.3.7: guided setup, selective tunnels, local coordinates, durable checkpoints, bounded vein mining.
+-- Mole v1.3.8: guided setup, selective tunnels, local coordinates, durable checkpoints, bounded vein mining.
 -- Origin is the turtle's starting block. +Z is forward, +X is right, Y is down.
-local VERSION='1.3.7'
+local VERSION='1.3.8'
 local UPDATE_URL='https://raw.githubusercontent.com/alexrvandijk/quarry-turtle/main/mole.lua'
 local argv = {...}
 local ROOT = 'quarry-data'
@@ -113,6 +113,11 @@ local function same(a,b) return a.x==b.x and a.y==b.y and a.z==b.z end
 local function key(p) return p.x..','..p.y..','..p.z end
 local function fuel() local f=turtle.getFuelLevel(); return f=='unlimited' and math.huge or f end
 local function capacity() local f=turtle.getFuelLimit(); return f=='unlimited' and math.huge or f end
+local function depthText(p)
+  local relative=tostring(p.y)..' blocks below start'
+  if s and type(s.startY)=='number' then return 'Y '..(s.startY-p.y)..' ('..relative..')' end
+  return relative..' (world Y unknown)'
+end
 local function answer(prompt)
   write(prompt..' ')
   local v=read(); return v:match('^%s*(.-)%s*$')
@@ -258,13 +263,41 @@ if fresh then
   if s and (s.pending or s.recovery or #s.route>0 or (s.phase~='done' and s.phase~='paused')) then
     print('Finish the job or return home before starting a new one.'); return
   end
-  print('\nMole 1.3.7 - first-time setup')
+  print('\nMole 1.3.8 - first-time setup')
   print('We dig tunnels and collect nearby ores.')
   print('Press Enter for each default, or q to cancel.')
   print('Length goes forward; width goes to the right.')
   local length=numberQuestion('Length in blocks',c.length,64); if not length then return end
   local width=numberQuestion('Width in blocks',c.width,64); if not width then return end
-  local depth=numberQuestion('Depth below the turtle',c.depth,512); if not depth then return end
+  local startY
+  while true do
+    local raw=answer('Starting world Y coordinate [Enter = unknown]:')
+    if raw:lower()=='q' then return end
+    if raw=='' then break end
+    local n=tonumber(raw)
+    if n and n==n and n~=math.huge and n~=-math.huge and n%1==0 then startY=n; break end
+    print('Enter a whole Y coordinate, including negative numbers, or leave blank.')
+  end
+  local suggested=c.depth
+  local safeDepth=startY and startY+62 or nil
+  if safeDepth then
+    print('Suggested lowest mining level: Y -62. Deeper runs may encounter dense bedrock.')
+    if safeDepth>=1 then suggested=math.min(suggested,safeDepth)
+    else print('This starting position is already at or below Y -62.') end
+  end
+  local depth=numberQuestion('Depth below the turtle',suggested,512); if not depth then return end
+  if safeDepth and depth>safeDepth then
+    while true do
+      print('Requested bottom: Y '..(startY-depth)..', below the suggested Y -62 limit.')
+      local prompt=safeDepth>=1 and 'Enter to stop at Y -62, yes to go deeper, or q to cancel:'
+        or 'Type yes to mine below Y -62 (other dimensions), or q/Enter to cancel:'
+      local choice=answer(prompt):lower()
+      if choice=='yes' then break end
+      if choice=='q' or choice=='' and safeDepth<1 then return end
+      if choice=='' then depth=safeDepth; break end
+      print('Use Enter, yes, or q.')
+    end
+  end
   print('\nPlace a chest directly BEHIND this turtle.')
   print('Put coal/charcoal in the first chest slots.')
   print('Face the turtle into the mining area.')
@@ -280,9 +313,10 @@ if fresh then
   c.length=length; c.width=width; c.depth=depth; writeFile(CP,c)
   local anchor={type=peripheral.getType('back'),size=peripheral.wrap('back').size()}
   s={anchor=anchor,seq=previousSeq,p={x=0,y=0,z=0,d=0},route={},index=1,phase='work',seen={},vein=nil,
-     layoutVersion=2,program=shell.getRunningProgram(),shape={w=c.width,l=c.length,h=c.depth}}
+     layoutVersion=2,startY=startY,program=shell.getRunningProgram(),shape={w=c.width,l=c.length,h=c.depth}}
   save(); ensureStartup()
   log('Starting '..c.length..' long x '..c.width..' wide, '..c.depth..' blocks deep.')
+  log('Start: '..depthText(s.p)..'. Planned bottom: '..depthText({y=c.depth})..'.')
 elseif argv[1]=='init' then
   print('Already set up. Run mole to resume.'); return
 end
@@ -290,12 +324,12 @@ c.width=s.shape.w; c.length=s.shape.l; c.depth=s.shape.h
 ensureStartup()
 if argv[1]=='status' then
   log('Saved step '..s.index..'; fuel '..fuel())
-  log('State: '..s.phase..'; depth '..s.p.y..' below start')
+  log('State: '..s.phase..'; '..((s.pending or s.recovery) and 'saved estimate: ' or '')..depthText(s.p))
   if s.recovery then
     for i,h in ipairs(s.recovery.hypotheses) do
       log('Recovery hypothesis '..i..': '..key(h.p)..', facing '..h.p.d..', route '..#h.route)
     end
-  else log('Position '..key(s.p)..', facing '..s.p.d) end
+  else log('Local tunnel position '..key(s.p)..', facing '..s.p.d) end
   if s.pending then print(textutils.serialize(s.pending)) end
   return
 end
@@ -622,7 +656,7 @@ local function requestService(reason, pause)
   local trail=#s.route
   local shortest=knownPath(origin,s.p)
   if shortest then s.route=shortest end
-  log('Returning to surface: '..reason..' ('..#s.route..' steps; trail was '..trail..'; depth '..s.p.y..')')
+  log('Returning to starting chest: '..reason..' ('..#s.route..' steps; trail was '..trail..'; '..depthText(s.p)..')')
   s.service={path=copyPath(s.route),target=copy(s.p),at=0,pause=pause,reason=reason}
   s.phase='home'; save()
 end
@@ -998,7 +1032,7 @@ local ok,err=pcall(function()
       end
       if vein() then
         s.index=s.index+1; save()
-        if s.index%16==0 then log('Tunnel progress: '..(s.index-1)..'/'..total..'; depth '..s.p.y) end
+        if s.index%16==0 then log('Tunnel progress: '..(s.index-1)..'/'..total..'; '..depthText(s.p)) end
         if s.index<=total and plan[s.index].band~=plan[s.index-1].band then
           log('Tunnel level finished. Returning to the chest.')
           -- Reset to origin each band: shorter, predictable return paths.

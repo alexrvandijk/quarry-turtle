@@ -1,4 +1,4 @@
-# Mole 1.3.7
+# Mole 1.3.8
 
 **A little mining robot that digs tunnels, finds nearby ores, and brings them back to your chest.**
 
@@ -45,12 +45,19 @@ The turtle asks:
 ```text
 Length in blocks [16]:
 Width in blocks [16]:
+Starting world Y coordinate [Enter = unknown]:
 Depth below the turtle [64]:
 ```
 
 Press **Enter** to use the number in brackets, or type a different whole number. Type `q` to cancel setup.
 
-For your first test, choose **3**, **3**, and **6**. Check that the chest is behind the turtle, then press Enter at the final prompt to start.
+For your first test, choose **3** for length, **3** for width, leave starting Y blank (or enter its actual value), and choose **6** for depth. Check that the chest is behind the turtle, then press Enter at the final prompt to start.
+
+The optional Y coordinate is the turtle's world height. Enter the Y of the turtle's own block, not the block underneath it. Negative numbers are accepted. Leave it blank if you do not know it; Mole then reports depth below the start and does not apply world-height guidance.
+
+When Y is known, Mole suggests stopping at **Y -62** and reduces the default depth if needed. If your chosen depth goes deeper, press Enter to shorten it to Y -62, or type `yes` to keep the deeper depth. This override is useful in other dimensions. If the turtle starts at or below Y -62, you must explicitly choose `yes` to mine downward. The requested depth still has the normal 512-block maximum.
+
+Progress and `mole status` show both world Y and blocks below the start when Y is known. For example, a start at Y 64 and a depth of 126 ends at Y -62. Entered Y is used for guidance and reporting; it does not locate the turtle or replace recovery. Existing jobs keep their current dimensions; the optional question is asked only for a new job. Emergency return detours can still move within the saved job area.
 
 Mole saves its starting position and creates an automatic restart file. Your settings and progress are saved for the next time it runs.
 
@@ -162,7 +169,7 @@ More advanced settings live in `quarry-data/config`: allowed fuel items, protect
 
 Water and lava are traversable. For unfamiliar blocks, including modded liquids such as oil, Mole first tries a saved movement before attempting to mine. A successfully traversed block type is remembered for the current run and is left out of ore-vein searches. This also works on return trips and during recovery; recovery never digs. Failed movement attempts do not permanently classify a block type as blocked. Protected blocks and detected machines are checked before probing. The program does not seal liquids or collect lava in buckets. It avoids known protected blocks and detected machine peripherals, but not every modded machine is detectable; keep it away from builds you want to preserve.
 
-## Faster mining in 1.3.7
+## Faster mining in 1.3.8
 
 Mole takes the shortest turn to face a block and starts new scans from its current facing. All six neighboring directions are still checked where they fall inside the mining area. Saved scans and automatic chest recovery support both left and right turns.
 
