@@ -1,4 +1,4 @@
--- Mole v1.3.1: guided setup, selective tunnels, local coordinates, durable checkpoints, bounded vein mining.
+-- Mole v1.3.6: guided setup, selective tunnels, local coordinates, durable checkpoints, bounded vein mining.
 -- Origin is the turtle's starting block. +Z is forward, +X is right, Y is down.
 local argv = {...}
 local ROOT = 'quarry-data'
@@ -25,7 +25,61 @@ local defaults = {
     ['minecraft:trapped_chest']=true, ['minecraft:barrel']=true,
     ['minecraft:spawner']=true, ['minecraft:end_portal_frame']=true},
 }
+-- Installation metadata stays separate so resetting a job retains startup backup.
+local INSTALL='mole-install-data'
+local function rawFile(path)
+  if not fs.exists(path) then return nil end
+  local h=assert(fs.open(path,'r')); local text=h.readAll(); h.close(); return text
+end
+local function generatedStartup(content,program)
+  if not content then return false end
+  local compact=content:gsub('%-%-[^\n]*',''):gsub('%s+','')
+  return (content:find('-- Automatically resume the saved mining job.',1,true)==1
+    and compact=='shell.run('..string.format('%q',program)..')')
+    or compact=="iffs.exists('quarry-data/state.a')orfs.exists('quarry-data/state.b')thenshell.run('mole')end"
+end
+if argv[1]=='delete' then
+  print('This removes Mole, its saved jobs, recovery data, and settings.')
+  write('Are you sure? yes/no: ')
+  if read():match('^%s*(.-)%s*$'):lower()~='yes' then print('Deletion cancelled.'); return end
+  local program=shell.getRunningProgram()
+  local installation
+  if fs.exists(INSTALL) then
+    local ok,result=pcall(readFile,INSTALL)
+    if not ok or type(result)~='table' or (result.path~='startup' and result.path~='startup.lua') then
+      print('Installation record is damaged; deletion stopped to preserve the startup backup.'); return
+    end
+    installation=result
+  end
+  if installation then
+    local current=rawFile(installation.path)
+    if current==installation.installed then
+      if installation.original~=nil then
+        local h=assert(fs.open(installation.path,'w')); h.write(installation.original); h.close()
+        print('Original startup file restored.')
+      else fs.delete(installation.path); print('Mole startup file removed.') end
+    else print('Startup was changed separately; keeping the current startup file.') end
+  else
+    -- Older installations had no backup. Remove only recognizable Mole startup.
+    for _,path in ipairs({'startup.lua','startup'}) do
+      if generatedStartup(rawFile(path),program) then fs.delete(path); print('Mole startup file removed.') end
+    end
+  end
+  fs.delete(ROOT)
+  if fs.exists(INSTALL) then fs.delete(INSTALL) end
+  fs.delete(program)
+  print('Mole deleted. Turtle fuel, inventory, and position are unchanged.')
+  return
+end
 local CP=ROOT..'/config'; local SP=ROOT..'/state'
+-- Reset before loading or validating old files: damaged saves must not block it.
+if argv[1]=='reset' then
+  fs.delete(ROOT); fs.makeDir(ROOT); writeFile(CP,defaults)
+  print('[Mole] Reset complete. Saved jobs, recovery data, and custom settings cleared.')
+  print('Fuel and carried items are still in the turtle. No movement was made.')
+  print('Place the turtle at your chosen start with a chest behind it, then run mole.')
+  return
+end
 if not fs.exists(CP) then writeFile(CP, defaults) end
 local c=readFile(CP)
 for _,k in ipairs({'width','length','depth','fuelMargin','fuelTarget','retries','veinLimit','veinDepth'}) do
@@ -79,8 +133,16 @@ local function ensureStartup()
   if not own then return end
   local updated='-- Automatically resume the saved mining job.\n'
     ..'shell.run('..string.format('%q',program)..')\n'
+  local installation=fs.exists(INSTALL) and readFile(INSTALL) or nil
+  if not installation then
+    installation={path=path,original=content,installed=updated}
+    if generatedStartup(content,program) then installation.original=nil end
+  elseif installation.path~=path then
+    log('Startup location changed; preserving the previous startup backup.'); return
+  end
+  installation.installed=updated; writeFile(INSTALL,installation)
   if content==updated then return end
-  local h=assert(fs.open(path,'w')); h.write(updated); h.close()
+  local h=assert(fs.open(path,'w'));  h.write(updated); h.close()
   log('Automatic restart enabled for Mole.')
 end
 local function settingsMenu()
@@ -113,6 +175,8 @@ if argv[1]=='help' then
   print('mole settings Change the trash list')
   print('mole return   Go home and pause')
   print('mole new      Set up a new job at home')
+  print('mole reset    Clear all saved jobs and restore default settings')
+  print('mole delete   Uninstall Mole (asks yes/no)')
   print('Hold Ctrl+T to stop the running program.')
   return
 end
@@ -125,7 +189,7 @@ if fresh then
   if s and (s.pending or s.recovery or #s.route>0 or (s.phase~='done' and s.phase~='paused')) then
     print('Finish the job or return home before starting a new one.'); return
   end
-  print('\nMole 1.3.0 - first-time setup')
+  print('\nMole 1.3.6 - first-time setup')
   print('We dig tunnels and collect nearby ores.')
   print('Press Enter for each default, or q to cancel.')
   print('Length goes forward; width goes to the right.')
@@ -223,11 +287,17 @@ local function obstruction(why)
 end
 local function inside(p) return p.x>=0 and p.x<c.width and p.z>=0 and p.z<c.length and p.y>=1 and p.y<=c.depth end
 -- Persist intent before physical actions; unfinished actions trigger chest homing.
-local function action(fn, after, route)
-  s.pending={before=copy(s.p),after=copy(after),route=route,fuel=turtle.getFuelLevel()}; save()
+local passable={['minecraft:water']=true,['minecraft:lava']=true}
+local function protectedBlock(b,per)
+  return peripheral.isPresent(per) or b and (c.protected[b.name]
+    or b.name:find('shulker_box',1,true) or b.name:find('turtle',1,true))
+end
+local function action(fn, after, route, probe)
+  s.pending={before=copy(s.p),after=copy(after),route=route,probe=probe,fuel=turtle.getFuelLevel()}; save()
   local ok,why=fn()
   if ok then
     s.p=copy(after); recordCell(s.p)
+    if probe then passable[probe]=true end
     if route=='push' then s.route[#s.route+1]=copy(s.p)
     elseif route=='pop' then table.remove(s.route)
     elseif route=='out' then
@@ -270,13 +340,21 @@ local function freeSlots()
   return n -- Callers only need to know whether at least two slots are empty.
 end
 local function trash()
-  if not c.discardTrash or s.p.y<1 then return end
-  -- Drop only into an empty mined block; never into a peripheral or liquid.
-  local ok=turtle.inspectDown()
-  if ok or peripheral.isPresent('bottom') then return end
+  if not c.discardTrash or not same(s.p,origin) then return end
   for i=1,16 do
     local v=turtle.getItemDetail(i)
-    if v and c.trash[v.name] and not c.fuel[v.name] then turtle.select(i); turtle.dropDown() end
+    if v and c.trash[v.name] and not c.fuel[v.name] then
+      local occupied=turtle.inspectDown()
+      if occupied or peripheral.isPresent('bottom') then
+        turtle.select(1)
+        error('Trash drop blocked below start; clear the space underneath, then run mole.',0)
+      end
+      turtle.select(i)
+      if not turtle.dropDown() or turtle.getItemCount(i)>0 then
+        turtle.select(1)
+        error('Trash could not be dropped below start; clear the space underneath, then run mole.',0)
+      end
+    end
   end
   turtle.select(1)
 end
@@ -311,18 +389,27 @@ local function step(target, mode, clearedOnly)
   end
   if fuel()<1 then error('Out of fuel; stopped at '..key(s.p),0) end
   for _=1,c.retries do
-    if clearedOnly then
-      local inspect=side=='up' and turtle.inspectUp or side=='down' and turtle.inspectDown or turtle.inspect
-      local exists,b=inspect()
-      if exists and b.name~='minecraft:water' and b.name~='minecraft:lava' then
-        error('Known tunnel blocked: '..key(target)..' ('..b.name..')',0)
-      end
-      local per=side=='up' and 'top' or side=='down' and 'bottom' or 'front'
-      if peripheral.isPresent(per) then error('Known tunnel blocked: '..key(target)..' (peripheral)',0) end
-    else guardedDig(side) end
+    local inspect=side=='up' and turtle.inspectUp or side=='down' and turtle.inspectDown or turtle.inspect
+    local exists,b=inspect()
+    local per=side=='up' and 'top' or side=='down' and 'bottom' or 'front'
+    if protectedBlock(exists and b or nil,per) then
+      if clearedOnly then error('Known tunnel blocked: '..key(target)..' (protected block or peripheral)',0) end
+      error('Protected block: '..(b and b.name or 'peripheral'),0)
+    end
     local p=copy(target); p.d=s.p.d
-    local ok=action(move,p,mode)
-    if ok then return end
+    -- Unknown solids and modded fluids are distinguished by a real, journaled
+    -- movement attempt. Never cache failure: it might be an entity obstruction.
+    if exists and not passable[b.name] and not c.trash[b.name] then
+      if action(move,p,mode,b.name) then return true end
+    elseif exists and passable[b.name] then
+      if action(move,p,mode,b.name) then return true end
+    end
+    if not (exists and passable[b.name]) then
+      if clearedOnly then
+        if exists then error('Known tunnel blocked: '..key(target)..' ('..b.name..')',0) end
+      else guardedDig(side) end
+      if action(move,p,mode) then return false end
+    end
     sleep(0.2) -- Wait for falling gravel or an entity; do not attack mobs.
   end
   error('Movement blocked at '..key(target),0)
@@ -373,7 +460,6 @@ local function excavateHome()
   local path=escapePath()
   if not path or #path==0 then error('Unable to find a return detour within the area and remaining fuel.',0) end
   local q=path[1]
-  trash()
   local ok,why=pcall(step,q,'push',false)
   if not ok then
     local message=tostring(why)
@@ -397,7 +483,6 @@ local function homeStep()
     local alternate=knownPath(origin,s.p)
     if not alternate then
       -- Try reopening the original passage before excavating around it.
-      trash()
       local reopened,err=pcall(step,target,'pop',false)
       if reopened then return end
       local message=tostring(err)
@@ -436,6 +521,7 @@ local function chest()
 end
 local function unload()
   chest()
+  trash()
   for i=1,16 do
     turtle.select(i)
     if turtle.getItemCount(i)>0 and not turtle.drop() then error('Output chest full; empty it and run mole.',0) end
@@ -443,6 +529,7 @@ local function unload()
   end
   turtle.select(1)
 end
+local function fuelText() return fuel()==math.huge and 'unlimited' or tostring(fuel())..' fuel units' end
 local function chestFuel(target)
   chest(); local inv=peripheral.wrap('front')
   -- Native suck cannot choose chest slots. Scan a fixed initial stack count,
@@ -458,6 +545,7 @@ local function chestFuel(target)
     if not turtle.suck() then break end
     refuelTo(target)
   end
+  log('Fuel after chest refueling: '..fuelText()..' (target: '..target..').')
   unload()
   if fuel()<target then error('Need more coal/charcoal. Put it at the front of the chest inventory, then run mole.',0) end
 end
@@ -476,12 +564,16 @@ local function service()
     s.phase='dock'; save()
   end
   if s.phase=='dock' then
+    log('At starting chest: '..s.service.reason..'. Fuel: '..fuelText()..'.')
+    log(c.discardTrash and 'Unloading: trash goes below the turtle; kept items go into the chest.'
+      or 'Unloading all items into the chest (trash dropping is off).')
     unload()
     if s.service.reason=='Quarry complete' then
-      s.phase='done'; save(); log('Complete; inventory unloaded.'); return false
+      s.phase='done'; save(); log('Complete; inventory unloaded. Remaining fuel: '..fuelText()..'. No refueling needed.'); return false
     end
     if s.service.pause then
-      s.phase='paused'; save(); log('Paused: '..s.service.reason..'. Fix it, then run mole.'); return false
+      s.phase='paused'; save(); log('Refueling deferred while paused. Fuel: '..fuelText()..'.')
+      log('Paused: '..s.service.reason..'. Fix it, then run mole.'); return false
     end
     local target=s.service.target or s.service.path[#s.service.path] or origin
     local shortest=knownPath(origin,target)
@@ -490,7 +582,14 @@ local function service()
     local n=#s.service.path
     local needed=n+reserve(n)+64
     assert(needed<=capacity() or fuel()==math.huge,'Route exceeds fuel capacity; reduce depth/vein limits.')
-    chestFuel(math.min(capacity(),math.max(c.fuelTarget,needed)))
+    local fuelTarget=math.min(capacity(),math.max(c.fuelTarget,needed))
+    log('Fuel target: '..fuelTarget..' units, for '..n..' moves back to work, a safe return/recovery reserve, and more mining.')
+    if fuel()>=fuelTarget then
+      log('Fuel already meets the target; no coal or charcoal needed.')
+    else
+      log('Taking coal/charcoal from the chest until the target is reached. Whole items may take fuel above the target.')
+    end
+    chestFuel(fuelTarget)
     s.phase='out'; save()
   end
   if s.phase=='out' then
@@ -586,13 +685,19 @@ local function vein()
         if d==4 then inspect=turtle.inspectUp elseif d==5 then inspect=turtle.inspectDown
         else face(d); inspect=turtle.inspect end
         local ok,b=inspect()
-        if ok and b.name~='minecraft:water' and b.name~='minecraft:lava' and not c.trash[b.name] then
-          step(q,'push'); s.seen[key(q)]=true; v.count=v.count+1
-          f.next=f.next+1; v.stack[#v.stack+1]=scanFrame(s.p); save()
+        if ok and not passable[b.name] and not c.trash[b.name] then
+          local traversed=step(q,'push'); s.seen[key(q)]=true
+          if traversed then
+            -- This was a fluid/passable block, not a deposit to follow.
+            step(f.p,'pop',true); f.next=f.next+1; save()
+          else
+            v.count=v.count+1
+            f.next=f.next+1; v.stack[#v.stack+1]=scanFrame(s.p); save()
+          end
         else f.next=f.next+1; save() end
       else f.next=f.next+1; save() end
     end
-    trash(); refuelTo(reserve(#s.route+1)+4)
+    refuelTo(reserve(#s.route+1)+4)
     if freeSlots()<2 or fuel()<=reserve(#s.route+1)+3 then
       requestService('Inventory or fuel reserve',false); return false
     end
@@ -651,7 +756,7 @@ local function beginRecovery()
   local resumeVein=clone(s.vein)
   -- Digging precedes the move. Even if the move never happened, its target
   -- is cleared; preserve the DFS branch so ores beyond that block are found.
-  if s.phase=='work' and resumeVein and pending.route=='push' then
+  if s.phase=='work' and resumeVein and pending.route=='push' and not pending.probe then
     local frame=resumeVein.stack[#resumeVein.stack]
     if frame and frame.next<6 and same(pending.before,frame.p)
       and same(pending.after,neighbour(frame.p,scanDirection(frame))) then
@@ -741,9 +846,14 @@ local function homeRecovery()
       local moved=false
       for _=1,c.retries do
         local exists,b=inspect()
-        if exists and b.name~='minecraft:water' and b.name~='minecraft:lava' then break end
+        local per=op=='up' and 'top' or op=='down' and 'bottom' or 'front'
+        if protectedBlock(exists and b or nil,per) then break end
+        if exists and not passable[b.name] and c.trash[b.name] then break end
         assert(fuel()>c.fuelMargin,'Recovery fuel margin reached; stopped safely.')
-        if recoveryAction(op) then moved=true; break end
+        if recoveryAction(op) then
+          if exists then passable[b.name]=true end
+          moved=true; break
+        end
         sleep(0.2)
       end
       if not moved then reachable=false; break end
@@ -810,7 +920,7 @@ local ok,err=pcall(function()
       requestService('Quarry complete',true); s.service.reason='Quarry complete'; save()
       service(); return
     end
-    refuelTo(reserve(#s.route+1)+64); trash()
+    refuelTo(reserve(#s.route+1)+64)
     if fuel()<=reserve(#s.route+1)+32 or freeSlots()<2 then
       requestService('Inventory or fuel reserve',false)
     else

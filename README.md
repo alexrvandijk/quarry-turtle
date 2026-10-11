@@ -1,4 +1,4 @@
-# Mole 1.3.1
+# Mole 1.3.6
 
 **A little mining robot that digs tunnels, finds nearby ores, and brings them back to your chest.**
 
@@ -64,6 +64,8 @@ At every tunnel step it checks the blocks above, below, in front, behind, left, 
 
 **Mole uses tunnel mining.** Stone stays in the walls, ceiling, and floor. Some isolated ores hidden between tunnels can be missed because the turtle cannot see through stone. Connected veins it finds are followed inside the chosen area. A search has size and depth limits so huge modded deposits cannot make the turtle wander forever; some of a very large deposit may remain.
 
+At the starting chest, Mole reports its current fuel, the target for the next trip, why that target is needed, and its fuel after refueling. It uses coal or charcoal only when below the target. Whole fuel items can take it slightly above the target. When the job finishes, it reports remaining fuel and does not refuel.
+
 The turtle returns to the chest when its inventory is nearly full, it needs fuel, or a tunnel level is finished. It also comes home when it finishes the whole job. It chooses the shortest route through cells it has already visited, and uses known tunnels to get back to work. If a passage becomes blocked, it tries another known route. If none is clear, it tries to mine the obstruction, then digs a detour toward the starting position. It reconnects to known tunnels as soon as it can. Emergency detours can extend one block past the far edges of the chosen width and length, and can reach the surface. Keep that border clear of builds. Protected blocks and machines are still left alone. If every approach is blocked, fuel is insufficient, or inventory space runs out, it saves progress and reports the problem after attempting to return.
 
 ## Everyday controls
@@ -75,9 +77,17 @@ The turtle returns to the chest when its inventory is nearly full, it needs fuel
 | `mole settings` | Change which blocks count as trash |
 | `mole return` | Return to the chest and pause |
 | `mole new` | Set up a new job after finishing or returning home |
+| `mole reset` | Clear saved jobs and recovery data, and restore all default settings |
+| `mole delete` | Uninstall Mole after a yes/no confirmation |
 | `mole help` | Show the short command list |
 
 While the miner is running, hold **Ctrl+T** to stop the program. Then type `mole return` if you want it to go home. Stopping can leave a move unfinished in the save file; automatic chest recovery handles this on the next launch.
+
+**Starting over after a problem:** run `mole reset`. This permanently clears the current job, saved routes, recovery information, previous-job archive, and custom settings, even if a saved file is damaged. It does not move the turtle or change its fuel or inventory. The program and startup file stay installed. Place the turtle at a safe starting corner with the chest behind it, then run `mole` for the normal setup questions.
+
+**Uninstalling:** run `mole delete`, then type `yes` to confirm. Any other answer cancels. This removes the running Mole program file, saved jobs, recovery data, custom settings, and its installation record. Fuel and carried items stay in the turtle, and it does not move.
+
+When Mole replaces a supported startup file, it saves the original and restores it on uninstall. If Mole created startup from scratch, uninstall removes it. Unrelated startup scripts are preserved. If you edit startup after installation, uninstall keeps your edited file; remove any Mole launch line yourself. Existing installations from older versions have no original backup: uninstall can remove recognizable Mole startup, but cannot recover a file that was already overwritten. `mole reset` keeps the installation record and startup backup so you can still uninstall later.
 
 Do not pick up, move, or turn the turtle during a saved job. After a job is finished, you can move it to a new starting corner, put the chest behind it, and run `mole new`. If you paused an unfinished job to start a new one, that abandons the old job; its last state is saved as `quarry-data/previous-job` for reference.
 
@@ -93,7 +103,7 @@ Choose **1** to ignore a block or **2** to keep it. Enter its full Minecraft blo
 
 The starter list contains dirt, stone, cobblestone, gravel, granite, and similar common blocks. Ores and unknown modded blocks are not trash by default.
 
-Choose **4** to turn trash dropping on or off. Turning it off keeps tunnel rubble and unloads it into the chest. When dropping is on, the turtle only drops trash into empty space below it; if the floor is solid it keeps that rubble until it gets a safe chance to drop it or unload. Dropped items are normal world items, so they may be picked up again.
+Choose **4** to turn trash dropping on or off. Turning it off keeps tunnel rubble and unloads it into the chest. When dropping is on, the turtle carries trash home and drops it into the empty space below its starting position before unloading valuable items into the chest. It never drops trash while mining. If the space underneath is blocked or a drop fails, it waits at home for you to clear it, keeping the trash out of the chest. Leave this space open. Dropped items are normal world items, so they may be picked up again.
 
 An ore's block ID and the item it drops can be different. The block ID controls whether the turtle follows it; the item ID controls whether a collected item is discarded. Add both IDs only if you want both ignored/discarded. Coal and charcoal are kept for fuel even if added to trash.
 
@@ -142,9 +152,9 @@ Recovery needs a clear return route, its original chest, and enough fuel. If a m
 
 More advanced settings live in `quarry-data/config`: allowed fuel items, protected blocks, fuel reserves, retries, and vein search limits. Job dimensions are fixed once a job starts.
 
-The program does not seal liquids or collect lava in buckets. It avoids known protected blocks and detected machine peripherals, but not every modded machine is detectable; keep it away from builds you want to preserve.
+Water and lava are traversable. For unfamiliar blocks, including modded liquids such as oil, Mole first tries a saved movement before attempting to mine. A successfully traversed block type is remembered for the current run and is left out of ore-vein searches. This also works on return trips and during recovery; recovery never digs. Failed movement attempts do not permanently classify a block type as blocked. Protected blocks and detected machines are checked before probing. The program does not seal liquids or collect lava in buckets. It avoids known protected blocks and detected machine peripherals, but not every modded machine is detectable; keep it away from builds you want to preserve.
 
-## Faster mining in 1.3.1
+## Faster mining in 1.3.6
 
 Mole takes the shortest turn to face a block and starts new scans from its current facing. All six neighboring directions are still checked where they fall inside the mining area. Saved scans and automatic chest recovery support both left and right turns.
 
