@@ -1,4 +1,4 @@
-# Mole 1.3.6
+# Mole 1.3.7
 
 **A little mining robot that digs tunnels, finds nearby ores, and brings them back to your chest.**
 
@@ -79,13 +79,14 @@ The turtle returns to the chest when its inventory is nearly full, it needs fuel
 | `mole new` | Set up a new job after finishing or returning home |
 | `mole reset` | Clear saved jobs and recovery data, and restore all default settings |
 | `mole delete` | Uninstall Mole after a yes/no confirmation |
+| `mole update` | Check GitHub and safely install a newer version |
 | `mole help` | Show the short command list |
 
 While the miner is running, hold **Ctrl+T** to stop the program. Then type `mole return` if you want it to go home. Stopping can leave a move unfinished in the save file; automatic chest recovery handles this on the next launch.
 
 **Starting over after a problem:** run `mole reset`. This permanently clears the current job, saved routes, recovery information, previous-job archive, and custom settings, even if a saved file is damaged. It does not move the turtle or change its fuel or inventory. The program and startup file stay installed. Place the turtle at a safe starting corner with the chest behind it, then run `mole` for the normal setup questions.
 
-**Uninstalling:** run `mole delete`, then type `yes` to confirm. Any other answer cancels. This removes the running Mole program file, saved jobs, recovery data, custom settings, and its installation record. Fuel and carried items stay in the turtle, and it does not move.
+**Uninstalling:** run `mole delete`, then type `yes` to confirm. Any other answer cancels. This removes the running Mole program file, saved jobs, recovery data, custom settings, its update download/backup files, and its installation record. Fuel and carried items stay in the turtle, and it does not move.
 
 When Mole replaces a supported startup file, it saves the original and restores it on uninstall. If Mole created startup from scratch, uninstall removes it. Unrelated startup scripts are preserved. If you edit startup after installation, uninstall keeps your edited file; remove any Mole launch line yourself. Existing installations from older versions have no original backup: uninstall can remove recognizable Mole startup, but cannot recover a file that was already overwritten. `mole reset` keeps the installation record and startup backup so you can still uninstall later.
 
@@ -124,15 +125,22 @@ Keep the turtle's mining area and chest loaded. The program cannot load chunks i
 
 ## Update Mole
 
-1. Hold Ctrl+T to stop the running program, then run `mole return` and wait for the turtle to reach its chest.
-2. Back up the program with `move mole mole-backup`. If that name already exists, choose another, such as `mole-backup-2`.
-3. Download the latest version:
+1. Hold Ctrl+T if Mole is running, to return to the command prompt.
+2. Type `mole update`.
+3. Mole checks the version on GitHub. If a newer version is available, it downloads it, checks that it is a versioned Mole program with valid Lua syntax, and checks the saved download before replacing the program.
+4. Type `mole` to resume your saved job. An interrupted move still uses normal position recovery.
+
+Your job, settings, fuel, inventory, and original startup backup are kept. The previous program is saved as `mole.update-backup`. A failed download leaves the current program in place. If installation fails, Mole tries to restore the previous program. Mole's automatic startup also restores that backup if an interrupted installation leaves the program missing. Custom startup scripts are left alone.
+
+If you need to restore the backup manually, remove the faulty `mole` file, then run `move mole.update-backup mole`. This restores the program only; it does not roll back your job or settings. Syntax checks cannot guarantee a new release is free of bugs.
+
+**Installing this updater for the first time:** versions before 1.3.7 need one manual update. Stop Mole, rename the old file with `move mole mole-backup` (choose another backup name if needed), then download:
 
 ```text
 wget https://raw.githubusercontent.com/alexrvandijk/quarry-turtle/main/mole.lua mole
 ```
 
-4. Run `mole` to resume.
+Run `mole` once. Future updates can use `mole update`. Updates become available when the newer `mole.lua` is uploaded to the repository's `main` branch.
 
 ### Moving from the old quarry program to Mole
 
@@ -154,7 +162,7 @@ More advanced settings live in `quarry-data/config`: allowed fuel items, protect
 
 Water and lava are traversable. For unfamiliar blocks, including modded liquids such as oil, Mole first tries a saved movement before attempting to mine. A successfully traversed block type is remembered for the current run and is left out of ore-vein searches. This also works on return trips and during recovery; recovery never digs. Failed movement attempts do not permanently classify a block type as blocked. Protected blocks and detected machines are checked before probing. The program does not seal liquids or collect lava in buckets. It avoids known protected blocks and detected machine peripherals, but not every modded machine is detectable; keep it away from builds you want to preserve.
 
-## Faster mining in 1.3.6
+## Faster mining in 1.3.7
 
 Mole takes the shortest turn to face a block and starts new scans from its current facing. All six neighboring directions are still checked where they fall inside the mining area. Saved scans and automatic chest recovery support both left and right turns.
 

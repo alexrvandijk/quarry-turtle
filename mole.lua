@@ -1,5 +1,7 @@
--- Mole v1.3.6: guided setup, selective tunnels, local coordinates, durable checkpoints, bounded vein mining.
+-- Mole v1.3.7: guided setup, selective tunnels, local coordinates, durable checkpoints, bounded vein mining.
 -- Origin is the turtle's starting block. +Z is forward, +X is right, Y is down.
+local VERSION='1.3.7'
+local UPDATE_URL='https://raw.githubusercontent.com/alexrvandijk/quarry-turtle/main/mole.lua'
 local argv = {...}
 local ROOT = 'quarry-data'
 fs.makeDir(ROOT)
@@ -31,10 +33,17 @@ local function rawFile(path)
   if not fs.exists(path) then return nil end
   local h=assert(fs.open(path,'r')); local text=h.readAll(); h.close(); return text
 end
+local function startupText(program)
+  return '-- Automatically resume the saved mining job.\n'
+    ..'local program='..string.format('%q',program)..'\n'
+    .."local backup=program..'.update-backup'\n"
+    ..'if not fs.exists(program) and fs.exists(backup) then fs.move(backup,program) end\n'
+    ..'shell.run(program)\n'
+end
 local function generatedStartup(content,program)
   if not content then return false end
   local compact=content:gsub('%-%-[^\n]*',''):gsub('%s+','')
-  return (content:find('-- Automatically resume the saved mining job.',1,true)==1
+  return content==startupText(program) or (content:find('-- Automatically resume the saved mining job.',1,true)==1
     and compact=='shell.run('..string.format('%q',program)..')')
     or compact=="iffs.exists('quarry-data/state.a')orfs.exists('quarry-data/state.b')thenshell.run('mole')end"
 end
@@ -67,8 +76,11 @@ if argv[1]=='delete' then
   end
   fs.delete(ROOT)
   if fs.exists(INSTALL) then fs.delete(INSTALL) end
+  for _,suffix in ipairs({'.update-backup','.update-download'}) do
+    if fs.exists(program..suffix) then fs.delete(program..suffix) end
+  end
   fs.delete(program)
-  print('Mole deleted. Turtle fuel, inventory, and position are unchanged.')
+  print('Mole successfully uninstalled')
   return
 end
 local CP=ROOT..'/config'; local SP=ROOT..'/state'
@@ -125,14 +137,13 @@ local function ensureStartup()
   end
   -- Update only our own generated startup, or a single legacy shell.run line.
   local compact=content and content:gsub('%-%-[^\n]*',''):gsub('%s+','')
-  local own=not content or compact=='shell.run("quarry")' or compact=="shell.run('quarry')"
+  local own=not content or generatedStartup(content,program) or compact=='shell.run("quarry")' or compact=="shell.run('quarry')"
     or compact=="iffs.exists('quarry-data/state.a')orfs.exists('quarry-data/state.b')thenshell.run('quarry')end"
     or compact=='shell.run("mole")' or compact=="shell.run('mole')"
     or (content:find('-- Automatically resume the saved mining job.',1,true)==1
         and compact:match('^shell%.run%(["\'][%w_./%-]+["\']%)$'))
   if not own then return end
-  local updated='-- Automatically resume the saved mining job.\n'
-    ..'shell.run('..string.format('%q',program)..')\n'
+  local updated=startupText(program)
   local installation=fs.exists(INSTALL) and readFile(INSTALL) or nil
   if not installation then
     installation={path=path,original=content,installed=updated}
@@ -144,6 +155,63 @@ local function ensureStartup()
   if content==updated then return end
   local h=assert(fs.open(path,'w'));  h.write(updated); h.close()
   log('Automatic restart enabled for Mole.')
+end
+if argv[1]=='update' then
+  local function update()
+    print('Installed Mole: '..VERSION..'. Checking GitHub...')
+    if not http or not http.get then print('HTTP downloads are disabled; ask the server owner to enable them.'); return end
+    local response,why,failed=http.get(UPDATE_URL)
+    if not response then
+      if failed then failed.close() end
+      print('Update check failed: '..tostring(why)..'. Current program kept.'); return
+    end
+    local ok,source=pcall(response.readAll); response.close()
+    if not ok or type(source)~='string' then print('Download failed. Current program kept.'); return end
+    local major,minor,patch=source:match('^%-%- Mole v(%d+)%.(%d+)%.(%d+)')
+    if not major then print('Download is not a versioned Mole program. Current program kept.'); return end
+    local remote={tonumber(major),tonumber(minor),tonumber(patch)}
+    local current={}; for n in VERSION:gmatch('%d+') do current[#current+1]=tonumber(n) end
+    local newer=false
+    for i=1,3 do
+      if remote[i]~=current[i] then newer=remote[i]>current[i]; break end
+    end
+    local version=major..'.'..minor..'.'..patch
+    if not newer then print('Already up to date. GitHub version: '..version..'.'); return end
+    if not load(source,'@Mole update','t',_ENV) then print('Downloaded program has invalid Lua syntax. Current program kept.'); return end
+    local program=shell.getRunningProgram()
+    local temp,backup=program..'.update-download',program..'.update-backup'
+    print('New version: '..version..'. Validating download before installing...')
+    if fs.exists(temp) then fs.delete(temp) end
+    local h=assert(fs.open(temp,'w'),'Cannot save update download'); h.write(source); h.close()
+    assert(rawFile(temp)==source,'Saved download did not match; current program kept.')
+    -- Upgrade only owned startup, preserving its original backup. It can restore
+    -- the old executable if a chunk unload occurs between the two file moves.
+    local installation=fs.exists(INSTALL) and readFile(INSTALL) or nil
+    local path=installation and installation.path or (fs.exists('startup.lua') and 'startup.lua' or 'startup')
+    local content=rawFile(path)
+    if generatedStartup(content,program) or installation and content==installation.installed then
+      installation=installation or {path=path}
+      local text=startupText(program)
+      installation.installed=text; writeFile(INSTALL,installation)
+      if content~=text then
+        local startup=assert(fs.open(path,'w')); startup.write(text); startup.close()
+      end
+    end
+    if fs.exists(backup) then fs.delete(backup) end
+    fs.move(program,backup)
+    local installed,err=pcall(fs.move,temp,program)
+    if not installed then
+      local restored=pcall(fs.move,backup,program)
+      if restored then print('Installation failed; old program restored: '..tostring(err))
+      else print('Installation failed. Restore '..backup..' to '..program..' before restarting.') end
+      return
+    end
+    print('Updated Mole to '..version..'. Previous program saved as '..backup..'.')
+    print('Job, settings, and startup backup kept. Run '..program..' to resume.')
+  end
+  local ok,why=pcall(update)
+  if not ok then print('Update stopped: '..tostring(why)..'. Check the program and its .update-backup before restarting.') end
+  return
 end
 local function settingsMenu()
   while true do
@@ -177,6 +245,7 @@ if argv[1]=='help' then
   print('mole new      Set up a new job at home')
   print('mole reset    Clear all saved jobs and restore default settings')
   print('mole delete   Uninstall Mole (asks yes/no)')
+  print('mole update   Check GitHub and install a newer version')
   print('Hold Ctrl+T to stop the running program.')
   return
 end
@@ -189,7 +258,7 @@ if fresh then
   if s and (s.pending or s.recovery or #s.route>0 or (s.phase~='done' and s.phase~='paused')) then
     print('Finish the job or return home before starting a new one.'); return
   end
-  print('\nMole 1.3.6 - first-time setup')
+  print('\nMole 1.3.7 - first-time setup')
   print('We dig tunnels and collect nearby ores.')
   print('Press Enter for each default, or q to cancel.')
   print('Length goes forward; width goes to the right.')
