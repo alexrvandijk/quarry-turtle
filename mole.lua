@@ -1,6 +1,6 @@
--- Mole v1.3.8: guided setup, selective tunnels, local coordinates, durable checkpoints, bounded vein mining.
+-- Mole v1.3.9: guided setup, selective tunnels, local coordinates, durable checkpoints, bounded vein mining.
 -- Origin is the turtle's starting block. +Z is forward, +X is right, Y is down.
-local VERSION='1.3.8'
+local VERSION='1.3.9'
 local UPDATE_URL='https://raw.githubusercontent.com/alexrvandijk/quarry-turtle/main/mole.lua'
 local argv = {...}
 local ROOT = 'quarry-data'
@@ -263,7 +263,7 @@ if fresh then
   if s and (s.pending or s.recovery or #s.route>0 or (s.phase~='done' and s.phase~='paused')) then
     print('Finish the job or return home before starting a new one.'); return
   end
-  print('\nMole 1.3.8 - first-time setup')
+  print('\nMole 1.3.9 - first-time setup')
   print('We dig tunnels and collect nearby ores.')
   print('Press Enter for each default, or q to cancel.')
   print('Length goes forward; width goes to the right.')
@@ -281,12 +281,14 @@ if fresh then
   local suggested=c.depth
   local safeDepth=startY and startY+62 or nil
   if safeDepth then
-    print('Suggested lowest mining level: Y -62. Deeper runs may encounter dense bedrock.')
+    print('Suggested lowest mining level: Y -62.')
+    print('Depth available before Y -62: '..math.max(0,safeDepth)..' blocks below this turtle.')
     if safeDepth>=1 then suggested=math.min(suggested,safeDepth)
     else print('This starting position is already at or below Y -62.') end
   end
   local depth=numberQuestion('Depth below the turtle',suggested,512); if not depth then return end
   if safeDepth and depth>safeDepth then
+    print('Caution: below Y -62, dense bedrock may make mining and return routes difficult.')
     while true do
       print('Requested bottom: Y '..(startY-depth)..', below the suggested Y -62 limit.')
       local prompt=safeDepth>=1 and 'Enter to stop at Y -62, yes to go deeper, or q to cancel:'
