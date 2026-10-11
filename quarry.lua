@@ -1,4 +1,4 @@
--- Quarry Turtle v1.1: local coordinates, durable checkpoints, bounded vein mining.
+-- Quarry Turtle v1.2: guided setup, selective tunnels, local coordinates, durable checkpoints, bounded vein mining.
 -- Origin is the turtle's starting block. +Z is forward, +X is right, Y is down.
 local argv = {...}
 local ROOT = 'quarry-data'
@@ -32,9 +32,6 @@ for _,k in ipairs({'width','length','depth','fuelMargin','fuelTarget','retries',
   assert(type(c[k])=='number' and c[k]>=1 and c[k]%1==0, 'Invalid config: '..k)
 end
 assert(type(c.trash)=='table' and type(c.fuel)=='table' and type(c.protected)=='table')
-if argv[1]=='config' then
-  print('[Quarry] Edit '..CP..' before init. Dimensions are locked after init.'); return
-end
 -- Alternating files keep the preceding complete checkpoint after interrupted writes.
 local s
 for _,p in ipairs({SP..'.a',SP..'.b'}) do
@@ -50,18 +47,103 @@ local function same(a,b) return a.x==b.x and a.y==b.y and a.z==b.z end
 local function key(p) return p.x..','..p.y..','..p.z end
 local function fuel() local f=turtle.getFuelLevel(); return f=='unlimited' and math.huge or f end
 local function capacity() local f=turtle.getFuelLimit(); return f=='unlimited' and math.huge or f end
-if argv[1]=='init' then
-  assert(not s,'Existing job: keep its state; use a fresh turtle for a new quarry.')
-  assert(peripheral.hasType('back','inventory'),'Place the output chest directly behind the turtle before init.')
+local function answer(prompt)
+  write(prompt..' ')
+  local v=read(); return v:match('^%s*(.-)%s*$')
+end
+local function numberQuestion(label,default,maximum)
+  while true do
+    local raw=answer(label..' ['..default..']:')
+    if raw=='' then return default end
+    if raw:lower()=='q' then return nil end
+    local n=tonumber(raw)
+    if n and n>=1 and n<=maximum and n%1==0 then return n end
+    print('Enter a whole number from 1 to '..maximum..'.')
+  end
+end
+local function ensureStartup()
+  -- Create our startup file only when there is no existing startup program.
+  if fs.exists('startup.lua') or fs.exists('startup') then return end
+  local program=s.program or shell.getRunningProgram()
+  local h=assert(fs.open('startup.lua','w'))
+  h.write('-- Automatically resume the saved mining job.\n')
+  h.write('shell.run('..string.format('%q',program)..')\n'); h.close()
+  log('Automatic restart enabled.')
+end
+local function settingsMenu()
+  while true do
+    print('\nTrash settings')
+    print('1 Add a block to trash (ignore it)')
+    print('2 Remove a block from trash (keep it)')
+    print('3 Show the trash list')
+    print('4 Toggle dropping trash: '..(c.discardTrash and 'ON' or 'OFF'))
+    print('Enter or q: finish')
+    local v=answer('Choose:'):lower()
+    if v=='' or v=='q' then return end
+    if v=='1' or v=='2' then
+      local name=answer('Block/item ID (example minecraft:stone):')
+      if name:match('^[%w_]+:[%w_/%.-]+$') then
+        if v=='1' then c.trash[name]=true else c.trash[name]=nil end
+        writeFile(CP,c); print('Saved.')
+      else print('Use a full block/item ID, with a colon.') end
+    elseif v=='3' then
+      local names={}; for name,enabled in pairs(c.trash) do if enabled then names[#names+1]=name end end
+      table.sort(names); for _,name in ipairs(names) do print(name) end
+    elseif v=='4' then c.discardTrash=not c.discardTrash; writeFile(CP,c)
+    else print('Choose 1, 2, 3 or 4.') end
+  end
+end
+if argv[1]=='help' then
+  print('Quarry Turtle 1.2 - tunnel miner')
+  print('quarry          Start or resume')
+  print('quarry status   Show progress')
+  print('quarry settings Change the trash list')
+  print('quarry return   Go home and pause')
+  print('quarry new      Set up a new job at home')
+  print('Hold Ctrl+T to stop the running program.')
+  return
+end
+if argv[1]=='settings' or argv[1]=='config' then settingsMenu(); return end
+local fresh=not s or argv[1]=='new'
+if fresh then
+  if argv[1] and argv[1]~='new' and argv[1]~='init' then
+    print('No saved job yet. Run quarry to set up.'); return
+  end
+  if s and (s.pending or s.recovery or #s.route>0 or (s.phase~='done' and s.phase~='paused')) then
+    print('Finish the job or return home before starting a new one.'); return
+  end
+  print('\nQuarry Turtle 1.2 - first-time setup')
+  print('We dig tunnels and collect nearby ores.')
+  print('Press Enter for each default, or q to cancel.')
+  print('Length goes forward; width goes to the right.')
+  local length=numberQuestion('Length in blocks',c.length,64); if not length then return end
+  local width=numberQuestion('Width in blocks',c.width,64); if not width then return end
+  local depth=numberQuestion('Depth below the turtle',c.depth,512); if not depth then return end
+  print('\nPlace a chest directly BEHIND this turtle.')
+  print('Put coal/charcoal in the first chest slots.')
+  print('Face the turtle into the mining area.')
+  print('Check that the area is safe to dig.')
+  while true do
+    local v=answer('Enter to start, or q to cancel:'):lower()
+    if v=='q' then return end
+    if peripheral.hasType('back','inventory') then break end
+    print('No chest behind the turtle. Place it, then retry.')
+  end
+  local previousSeq=s and s.seq or 0
+  if s then writeFile(ROOT..'/previous-job',s) end
+  c.length=length; c.width=width; c.depth=depth; writeFile(CP,c)
   local anchor={type=peripheral.getType('back'),size=peripheral.wrap('back').size()}
-  s={anchor=anchor,seq=0,p={x=0,y=0,z=0,d=0},route={},index=1,phase='work',seen={},vein=nil,
-     shape={w=c.width,l=c.length,h=c.depth}}
-  save(); log('Initialized. Chest behind; footprint extends forward and right. Run quarry to start.'); return
-elseif not s then error('Run quarry init at the starting corner first.',0) end
-assert(s.shape.w==c.width and s.shape.l==c.length and s.shape.h==c.depth,
- 'Do not change dimensions during a job.')
+  s={anchor=anchor,seq=previousSeq,p={x=0,y=0,z=0,d=0},route={},index=1,phase='work',seen={},vein=nil,
+     layoutVersion=2,program=shell.getRunningProgram(),shape={w=c.width,l=c.length,h=c.depth}}
+  save(); ensureStartup()
+  log('Starting '..c.length..' long x '..c.width..' wide, '..c.depth..' blocks deep.')
+elseif argv[1]=='init' then
+  print('Already set up. Run quarry to resume.'); return
+end
+c.width=s.shape.w; c.length=s.shape.l; c.depth=s.shape.h
 if argv[1]=='status' then
-  log('Phase '..s.phase..'; cell '..s.index..'; fuel '..fuel())
+  log('Saved step '..s.index..'; fuel '..fuel())
+  log('State: '..s.phase..'; depth '..s.p.y..' below start')
   if s.recovery then
     for i,h in ipairs(s.recovery.hypotheses) do
       log('Recovery hypothesis '..i..': '..key(h.p)..', facing '..h.p.d..', route '..#h.route)
@@ -236,7 +318,7 @@ local function service()
       s.phase='done'; save(); log('Complete; inventory unloaded.'); return false
     end
     if s.service.pause then
-      s.phase='paused'; save(); log('Paused: '..s.service.reason..'. Fix the issue, then quarry continue.'); return false
+      s.phase='paused'; save(); log('Paused: '..s.service.reason..'. Fix it, then run quarry.'); return false
     end
     local n=#s.service.path
     local needed=n+reserve(n)+64
@@ -255,14 +337,47 @@ local function service()
   end
   return true
 end
--- A cell clears the band above/at/below its centre: depths 2,5,8,...
-local function cell(i)
-  local band=math.floor((i-1)/(c.width*c.length)); local n=(i-1)%(c.width*c.length)
-  local x=math.floor(n/c.length); local z=n%c.length
-  if x%2==1 then z=c.length-1-z end
-  return {x=x,y=math.min(2+3*band,c.depth),z=z}
+-- A one-block-high tunnel grid. Two stone columns stay between long
+-- tunnels; endpoint connectors and the entry shaft are scanned too.
+local plan,bandStarts={},{}
+local rows={}
+for x=0,c.width-1,3 do rows[#rows+1]=x end
+if c.width-1>rows[#rows]+1 then rows[#rows+1]=c.width-1 end
+local previousDepth=0
+for band=0,math.ceil(c.depth/3)-1 do
+  local y=math.min(2+3*band,c.depth)
+  bandStarts[band+1]=#plan+1
+  for shaftY=previousDepth+1,y do plan[#plan+1]={x=0,y=shaftY,z=0,band=band+1} end
+  local lastX=0
+  for row,x in ipairs(rows) do
+    local startZ=row%2==1 and 0 or c.length-1
+    if row>1 then
+      for connectorX=lastX+1,x do plan[#plan+1]={x=connectorX,y=y,z=startZ,band=band+1} end
+    end
+    -- The first point is already the shaft or connector endpoint.
+    for offset=1,c.length-1 do
+      local z=row%2==1 and offset or c.length-1-offset
+      plan[#plan+1]={x=x,y=y,z=z,band=band+1}
+    end
+    lastX=x
+  end
+  previousDepth=y
 end
-local total=math.ceil(c.depth/3)*c.width*c.length
+local total=#plan
+local function cell(i) return plan[i] end
+-- Old excavation checkpoints used a different cell numbering scheme.
+-- Remember their vertical band; convert only after reaching the chest.
+if not s.layoutVersion and s.upgradeBand==nil then
+  s.upgradeBand=math.floor((s.index-1)/(c.width*c.length)); save()
+end
+local function upgradeAtDock()
+  if s.upgradeBand==nil then return end
+  assert(#s.route==0 and s.p.x==0 and s.p.y==0 and s.p.z==0,'Update requires the starting chest.')
+  s.index=bandStarts[s.upgradeBand+1] or total+1
+  s.upgradeBand=nil; s.layoutVersion=2; s.vein=nil
+  if s.service then s.service.path={}; s.service.at=0 end
+  save(); log('Updated to tunnel mining. Existing depth progress kept.')
+end
 local function neighbour(p,d)
   local q=copy(p)
   if d==4 then q.y=q.y-1 elseif d==5 then q.y=q.y+1
@@ -347,7 +462,22 @@ local function beginRecovery()
   local hypotheses={before,after}
   -- Fuel is a useful ordering hint for movement, not a required dependency.
   if type(pending.fuel)=='number' and fuel()==pending.fuel-1 then hypotheses={after,before} end
+  local resumePath=clone(s.service and s.service.path or s.route)
+  local resumeVein=clone(s.vein)
+  -- Digging precedes the move. Even if the move never happened, its target
+  -- is cleared; preserve the DFS branch so ores beyond that block are found.
+  if s.phase=='work' and resumeVein and pending.route=='push' then
+    local frame=resumeVein.stack[#resumeVein.stack]
+    if frame and frame.next<6 and same(pending.before,frame.p)
+      and same(pending.after,neighbour(frame.p,frame.next)) then
+      resumePath=clone(after.route)
+      frame.next=frame.next+1; resumeVein.count=resumeVein.count+1
+      resumeVein.stack[#resumeVein.stack+1]={p=copy(pending.after),next=0}
+      s.seen[key(pending.after)]=true
+    end
+  end
   s.recovery={hypotheses=hypotheses,pause=s.service and s.service.pause or false,
+    resumePath=resumePath,resumeVein=resumeVein,
     reason=s.service and s.service.reason or 'Interrupted action recovery'}
   s.pending=nil; s.phase='recovery'; compactHypotheses(); save()
   log('Uncertain action: homing to the starting chest without digging.')
@@ -433,12 +563,12 @@ local function homeRecovery()
     if reachable then
       recoveryFace(h,2)
       if anchorMatches() then
-        -- Reanchor at the chest. Restart the current cell, including its vein
-        -- search, rather than trusting the interrupted operation's outcome.
-        s.p={x=0,y=0,z=0,d=2}; s.route={}; s.vein=nil
-        s.service={path={},at=0,pause=r.pause,reason=r.reason}
+        -- Reanchor, then replay the saved cleared route to the pending vein
+        -- branch. A tunnel miner must not lose ores behind already mined air.
+        s.p={x=0,y=0,z=0,d=2}; s.route={}; s.vein=r.resumeVein
+        s.service={path=r.resumePath or {},at=0,pause=r.pause,reason=r.reason}
         s.phase='dock'; s.recovery=nil; save()
-        log('Starting chest found. Position reset; resuming saved quarry cell '..s.index..'.')
+        log('Starting chest found. Resuming saved tunnel step '..s.index..'.')
         return
       end
     end
@@ -453,11 +583,36 @@ end
 if argv[1]=='continue' and s.phase=='paused' then
   s.service.pause=false; s.phase='dock'; save()
 end
-if argv[1]=='return' and s.phase=='work' then requestService('User requested return',true) end
-if s.phase=='paused' or s.phase=='done' then log('Phase: '..s.phase); return end
+if s.phase=='done' then
+  print('Mining finished! Items are in the chest.')
+  print('For a new job, face into the new area, then quarry new.'); return
+end
+if s.phase=='paused' then
+  if argv[1]=='return' then print('Already paused at the starting chest.'); return end
+  log('Paused: '..tostring(s.service and s.service.reason or 'User pause'))
+  if answer('Fixed the issue? Enter to resume, q to exit:'):lower()=='q' then return end
+  s.service.pause=false; s.phase='dock'; save()
+end
 -- Resume first services the saved route, then resumes a saved vein or quarry cell.
 local ok,err=pcall(function()
   if s.pending or s.recovery then homeRecovery() end
+  if argv[1]=='return' then
+    if s.phase=='work' or s.phase=='out' then
+      local destination=s.phase=='out' and clone(s.service.path) or nil
+      requestService('User requested return',true)
+      if destination then s.service.path=destination; save() end
+    elseif s.service then
+      s.service.pause=true; s.service.reason='User requested return'; save()
+    end
+  end
+  if s.upgradeBand~=nil then
+    if s.phase~='dock' then
+      requestService('Updating to tunnel mining',false); s.service.reset=true; save()
+      while #s.route>0 do homeStep() end
+      s.phase='dock'; save()
+    end
+    upgradeAtDock()
+  end
   if s.index==1 and s.phase=='work' and #s.route==0 and not s.vein then
     requestService('Initial chest/fuel check',false)
   end
@@ -473,13 +628,12 @@ local ok,err=pcall(function()
     else
       if not s.vein then
         local p=cell(s.index); gotoWork(p)
-        if p.y>1 then guardedDig('up') end
-        if p.y<c.depth then guardedDig('down') end
       end
       if vein() then
         s.index=s.index+1; save()
-        if s.index<=total and (s.index-1)%(c.width*c.length)==0 then
-          log('Band finished; next cell '..s.index..'/'..total)
+        if s.index%16==0 then log('Tunnel progress: '..(s.index-1)..'/'..total..'; depth '..s.p.y) end
+        if s.index<=total and plan[s.index].band~=plan[s.index-1].band then
+          log('Tunnel level finished. Returning to the chest.')
           -- Reset to origin each band: shorter, predictable return paths.
           requestService('Band complete',false); s.service.reset=true; save()
         end
